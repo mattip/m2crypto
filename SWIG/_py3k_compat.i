@@ -10,6 +10,7 @@ FILE* PyFile_AsFile(PyObject *pyfile) {
     FILE* fp;
     int fd;
     const char *mode_str = NULL;
+    PyObject *mode_obj;
 
     if ((fd = PyObject_AsFileDescriptor(pyfile)) == -1) {
         PyErr_SetString(PyExc_BlockingIOError,
@@ -17,22 +18,15 @@ FILE* PyFile_AsFile(PyObject *pyfile) {
         return NULL;
     }
 
-    if (PyObject_HasAttrString(pyfile, "mode")) {
-        PyObject *mode_obj = PyObject_GetAttrString(pyfile, "mode");
-        if (mode_obj == NULL) {
-             PyErr_SetString(PyExc_BlockingIOError,
-                          "File does have NULL mode attribute!");
-             return NULL;
-        }
-
+    if ((mode_obj = PyObject_GetAttrString(pyfile, "mode")) == NULL) {
+        mode_str = "rb";
+    }
+    else {
         /* convert to plain string
          * note that error checking is embedded in the function
          */
         mode_str = PyUnicode_AsUTF8AndSize(mode_obj, NULL);
-    }
-    else {
-        mode_str = "rb";
-        return NULL;
+        Py_DECREF(mode_obj);
     }
 
     if((fp = fdopen(fd, mode_str)) == NULL) {
