@@ -4286,6 +4286,41 @@ int X509_NAME_get0_der(X509_NAME *nm, const unsigned char **pder,
 
 #if PY_MAJOR_VERSION >= 3
 
+/* Return the name of the file specified by p as a string object. */
+PyObject* PyFile_Name(PyObject *pyfile) {
+   return PyObject_GetAttrString(pyfile, "name");
+}
+
+FILE* PyFile_AsFile(PyObject *pyfile) {
+    FILE* fp;
+    int fd;
+    const char *mode_str = NULL;
+    PyObject *mode_obj;
+
+    if ((fd = PyObject_AsFileDescriptor(pyfile)) == -1) {
+        PyErr_SetString(PyExc_BlockingIOError,
+                        "Cannot find file handler for the Python file!");
+        return NULL;
+    }
+
+    if ((mode_obj = PyObject_GetAttrString(pyfile, "mode")) == NULL) {
+        mode_str = "rb";
+    }
+    else {
+        /* convert to plain string
+         * note that error checking is embedded in the function
+         */
+        mode_str = PyUnicode_AsUTF8AndSize(mode_obj, NULL);
+        Py_DECREF(mode_obj);
+    }
+
+    if((fp = fdopen(fd, mode_str)) == NULL) {
+         PyErr_SetFromErrno(PyExc_IOError);
+         return NULL;
+    }
+
+    return fp;
+}
 
 #else /* PY2K */
 
@@ -4535,13 +4570,9 @@ int ssl_verify_callback(int ok, X509_STORE_CTX *ctx) {
         _x509_store_ctx_swigptr = SWIG_NewPointerObj((void *)ctx, SWIGTYPE_p_X509_STORE_CTX, 0);
         _x509_store_ctx_obj = Py_BuildValue("(Oi)", _x509_store_ctx_swigptr, 0);
 
-#if PY_MAJOR_VERSION >= 3
-        _x509_store_ctx_inst = PyType_GenericNew(_klass, _x509_store_ctx_obj, NULL);
-#else
-        _x509_store_ctx_inst = PyInstance_New(_klass, _x509_store_ctx_obj, NULL);
-#endif // PY_MAJOR_VERSION >= 3
+	_x509_store_ctx_inst = PyObject_CallObject(_klass, _x509_store_ctx_obj);
 
-        argv = Py_BuildValue("(iO)", ok, _x509_store_ctx_inst);
+	argv = Py_BuildValue("(iO)", ok, _x509_store_ctx_inst);
     } else {
         if (PyErr_Warn(PyExc_DeprecationWarning, "Old style callback, use cb_func(ok, store) instead")) {
             warning_raised_exception = 1;
@@ -4608,11 +4639,7 @@ int x509_store_verify_callback(int ok, X509_STORE_CTX *ctx) {
     _x509_store_ctx_swigptr = SWIG_NewPointerObj((void *)ctx, SWIGTYPE_p_X509_STORE_CTX, 0);
     _x509_store_ctx_obj = Py_BuildValue("(Oi)", _x509_store_ctx_swigptr, 0);
 
-#if PY_MAJOR_VERSION >= 3
-        _x509_store_ctx_inst = PyType_GenericNew(_klass, _x509_store_ctx_obj, NULL);
-#else
-        _x509_store_ctx_inst = PyInstance_New(_klass, _x509_store_ctx_obj, NULL);
-#endif // PY_MAJOR_VERSION >= 3
+    _x509_store_ctx_inst = PyObject_CallObject(_klass, _x509_store_ctx_obj);
 
     argv = Py_BuildValue("(iO)", ok, _x509_store_ctx_inst);
 
@@ -4995,48 +5022,32 @@ BIO * bio_new_file(const char *filename, const char *mode) {
 
 BIO *bio_new_pyfile(PyObject *pyfile, int bio_close) {
     FILE *fp = NULL;
-#if PY_MAJOR_VERSION >= 3
-    if (PyObject_HasAttrString(pyfile, "fileno")) {
-        int fd = (int)PyLong_AsLong(PyObject_CallMethod(pyfile, "fileno", NULL));
-        if (PyObject_HasAttrString(pyfile, "mode")) {
-            char *mode = PyUnicode_AsUTF8AndSize(
-                    PyObject_CallMethod(pyfile, "mode", NULL), NULL);
-            fp = fdopen(fd, mode);
-        }
-        else {
-            PyErr_Format(PyExc_ValueError,
-                         "File doesn’t have mode attribute!");
-            return NULL;
-        }
-    }
-    else {
-        PyErr_Format(PyExc_ValueError, "File doesn’t have fileno method!");
-        return NULL;
-    }
 
-#else
     fp = PyFile_AsFile(pyfile);
-#endif
-    BIO *bio = BIO_new_fp(fp, bio_close); /* returns NULL if error occurred */
 
+    BIO *bio = BIO_new_fp(fp, bio_close);
+
+    /* returns NULL if error occurred */
     if (bio == NULL) {
-        char *name = "";
-#if PY_MAJOR_VERSION >= 3
-        if (PyObject_HasAttrString(pyfile, "name")) {
-            char *name = PyUnicode_AsUTF8AndSize(
-                    PyObject_CallMethod(pyfile, "name", NULL), NULL);
+        /* Find out the name of the file so we can have good error
+         * message. */
+        PyObject *pyname = PyFile_Name(pyfile);
+        char *name = PyBytes_AsString(pyname);
+
+        if (name == NULL) {
+            PyErr_Format(_bio_err,
+                         "Opening of the new BIO on file failed!");
         }
         else {
-            PyErr_Format(PyExc_ValueError,
-                         "File doesn’t have name attribute!");
-            return NULL;
+            PyErr_Format(_bio_err,
+                         "Opening of the new BIO on file %s failed!", name);
         }
-#else
-        name = PyString_AsString(PyFile_Name(pyfile));
+#if PY_MAJOR_VERSION >= 3
+        /* PyFile_Name replacment for py3k doesn't borrow value, but
+         * actually returns new one, so it must be garbage collected.
+         */
+        Py_DECREF(pyname);
 #endif
-        PyErr_Format(PyExc_MemoryError,
-                     "Opening of the new BIO on file %s failed!", name);
-        return NULL;
     }
     return bio;
 }
@@ -5573,11 +5584,7 @@ PyObject *bn_rand_range(PyObject *range)
     Py_DECREF(format);
     Py_DECREF(tuple);
 
-#if PY_MAJOR_VERSION >= 3
     rangehex = PyUnicode_AsUTF8(rangePyString);
-#else
-    rangehex = PyString_AsString(rangePyString);
-#endif // PY_MAJOR_VERSION >= 3
 
     if (!BN_hex2bn(&rng, rangehex)) {
         /*Custom errors?*/
@@ -5661,11 +5668,11 @@ PyObject *rand_bytes(int n) {
         PyMem_Free(blob);
         return obj;
     } else if (ret == 0) {
-        PyErr_SetString(PyExc_ValueError, "Not enough randomness.");
+        PyErr_SetString(_rand_err, "Not enough randomness.");
         PyMem_Free(blob);
         return NULL;
     } else if (ret == -1) {
-        PyErr_SetString(PyExc_ValueError,
+        PyErr_SetString(_rand_err,
                         "Not supported by the current RAND method.");
         PyMem_Free(blob);
         return NULL;
@@ -5793,9 +5800,10 @@ RSA *pkey_get1_rsa(EVP_PKEY *pkey) {
     RSA *ret = NULL;
 
     if ((ret = EVP_PKEY_get1_RSA(pkey)) == NULL) {
-        /* Yes, _evp_err would be better, but unfortunately
-           this is part of API. */
-        PyErr_Format(PyExc_ValueError, "Invalid key in function %s.", __func__);
+        /* _evp_err now inherits from PyExc_ValueError, so we should
+         * keep API intact.
+         */
+        PyErr_Format(_evp_err, "Invalid key in function %s.", __func__);
     }
 
     return ret;
@@ -6219,7 +6227,7 @@ PyObject *pkey_as_der(EVP_PKEY *pkey) {
     PyObject * der;
     len = i2d_PUBKEY(pkey, &pp);
     if (len < 0){
-        PyErr_SetString(PyExc_ValueError, "EVP_PKEY as DER failed");
+        PyErr_SetString(_evp_err, "EVP_PKEY as DER failed");
         return NULL;
     }
 
@@ -6296,7 +6304,7 @@ PyObject *pkey_get_modulus(EVP_PKEY *pkey)
             break;
 
         default:
-            PyErr_SetString(PyExc_ValueError, "unsupported key type");
+            PyErr_SetString(_evp_err, "unsupported key type");
             return NULL;
     }
 }
@@ -8532,6 +8540,10 @@ int asn1_integer_set(ASN1_INTEGER *asn1, PyObject *value) {
     BIGNUM *bn = NULL;
     PyObject *fmt, *args, *hex;
 
+/* Despite all hopes to the contrary, we cannot survive here with
+ * PyLong_AsLong shims as provided in
+ * /usr/include/python2.7/longobject.h.
+ */
 #if PY_MAJOR_VERSION >= 3
     if (PyLong_Check(value))
         return ASN1_INTEGER_set(asn1, PyLong_AsLong(value));
@@ -10956,6 +10968,36 @@ SWIGINTERN PyObject *_wrap_bio_pop(PyObject *self, PyObject *args) {
   }
   result = (BIO *)BIO_pop(arg1);
   resultobj = SWIG_NewPointerObj(SWIG_as_voidptr(result), SWIGTYPE_p_BIO, 0 |  0 );
+  return resultobj;
+fail:
+  return NULL;
+}
+
+
+SWIGINTERN PyObject *_wrap_bio_eof(PyObject *self, PyObject *args) {
+  PyObject *resultobj = 0;
+  BIO *arg1 = (BIO *) 0 ;
+  void *argp1 = 0 ;
+  int res1 = 0 ;
+  PyObject * obj0 = 0 ;
+  int result;
+  
+  if(!PyArg_UnpackTuple(args,(char *)"bio_eof",1,1,&obj0)) SWIG_fail;
+  res1 = SWIG_ConvertPtr(obj0, &argp1,SWIGTYPE_p_BIO, 0 |  0 );
+  if (!SWIG_IsOK(res1)) {
+    SWIG_exception_fail(SWIG_ArgError(res1), "in method '" "bio_eof" "', argument " "1"" of type '" "BIO *""'"); 
+  }
+  arg1 = (BIO *)(argp1);
+  {
+    if (!arg1) {
+      SWIG_exception(SWIG_ValueError,"Received a NULL pointer.");
+    }
+  }
+  result = (int)BIO_eof(arg1);
+  {
+    resultobj=PyLong_FromLong(result);
+    if (PyErr_Occurred()) SWIG_fail;
+  }
   return resultobj;
 fail:
   return NULL;
@@ -22649,7 +22691,7 @@ SWIGINTERN PyObject *_wrap_x509_name_entry_set_data(PyObject *self, PyObject *ar
       
       
       if (len > INT_MAX) {
-        PyErr_SetString(PyExc_ValueError, "object too large");
+        PyErr_SetString(_x509_err, "object too large");
         return NULL;
       }
       arg4 = len;
@@ -29009,6 +29051,7 @@ static PyMethodDef SwigMethods[] = {
 	 { (char *)"bio_dup_chain", _wrap_bio_dup_chain, METH_VARARGS, NULL},
 	 { (char *)"bio_push", _wrap_bio_push, METH_VARARGS, NULL},
 	 { (char *)"bio_pop", _wrap_bio_pop, METH_VARARGS, NULL},
+	 { (char *)"bio_eof", _wrap_bio_eof, METH_VARARGS, NULL},
 	 { (char *)"bio_init", _wrap_bio_init, METH_VARARGS, NULL},
 	 { (char *)"bio_free", _wrap_bio_free, METH_VARARGS, NULL},
 	 { (char *)"bio_new_file", _wrap_bio_new_file, METH_VARARGS, NULL},
