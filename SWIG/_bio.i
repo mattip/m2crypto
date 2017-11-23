@@ -110,7 +110,8 @@ BIO *bio_new_pyfile(PyObject *pyfile, int bio_close) {
     if (bio == NULL) {
         /* Find out the name of the file so we can have good error
          * message. */
-        char *name = PyBytes_AsString(PyFile_Name(pyfile));
+        PyObject *pyname = PyFile_Name(pyfile);
+        char *name = PyBytes_AsString(pyname);
 
         if (name == NULL) {
             PyErr_Format(_bio_err,
@@ -120,7 +121,12 @@ BIO *bio_new_pyfile(PyObject *pyfile, int bio_close) {
             PyErr_Format(_bio_err,
                          "Opening of the new BIO on file %s failed!", name);
         }
-        return NULL;
+#if PY_MAJOR_VERSION >= 3
+        /* PyFile_Name replacment for py3k doesn't borrow value, but
+         * actually returns new one, so it must be garbage collected.
+         */
+        Py_DECREF(pyname);
+#endif
     }
     return bio;
 }
