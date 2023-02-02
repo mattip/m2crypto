@@ -2,6 +2,8 @@
 M2Crypto
 ========
 
+This is an unofficial mirror of the project. Please do not file issues or PRs here.
+
 :Maintainer: Matěj Cepl
 :Web-Site: https://gitlab.com/m2crypto/m2crypto
 :Email list: m2crypto@lists.redcrew.org or http://redcrew.org/mailman/listinfo/m2crypto
